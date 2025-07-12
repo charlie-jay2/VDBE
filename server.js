@@ -1,7 +1,7 @@
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
-const fetch = require("node-fetch"); // To call Discord API
+const fetch = require("node-fetch"); // Import node-fetch for Discord API calls
 
 const app = express();
 const server = http.createServer(app);
@@ -55,10 +55,12 @@ wss.on("connection", (ws) => {
 
       send(ws, "status", { message: "Finding match..." });
 
+      // Clean stale connections
       waitingUsers = waitingUsers.filter(
         (user) => user.readyState === WebSocket.OPEN
       );
 
+      // Find matching opponent
       const opponent = waitingUsers.find(
         (user) => user !== ws && user.userData.rarity === ws.userData.rarity
       );
