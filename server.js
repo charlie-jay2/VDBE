@@ -7,6 +7,12 @@ import WebSocket, { WebSocketServer } from "ws";
 import jwt from "jsonwebtoken";
 import axios from "axios";
 import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// __dirname workaround for ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
@@ -18,7 +24,7 @@ const {
   DISCORD_REDIRECT_URI,
   JWT_SECRET,
   FRONTEND_URL,
-  PORT = 8080,
+  PORT = 3000,
 } = process.env;
 
 if (
@@ -88,7 +94,7 @@ app.get("/auth/discord", async (req, res) => {
   }
 });
 
-// 🕵️‍♂️ WebSocket authentication
+// 🕵️‍♂️ WebSocket authentication function
 function verifyClient(info, done) {
   const authHeader = info.req.headers["sec-websocket-protocol"];
   if (!authHeader) {
@@ -109,10 +115,20 @@ function verifyClient(info, done) {
   }
 }
 
-// 🚀 Upgrade HTTP server to handle WS connections
+// 🚀 Upgrade HTTP server to handle WS connections with auth
 server.on("upgrade", (req, socket, head) => {
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit("connection", ws, req);
+  verifyClient({ req }, (verified, code, message) => {
+    if (!verified) {
+      socket.write(
+        `HTTP/1.1 ${code} ${message}\r\n` + "Connection: close\r\n\r\n"
+      );
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
   });
 });
 
@@ -133,5 +149,5 @@ wss.on("connection", (ws, req) => {
 
 // Start server
 server.listen(PORT, () => {
-  console.log(`🌐 API Server running on port ${PORT}`);
+  console.log(`🌐 Server running on http://localhost:${PORT}`);
 });
