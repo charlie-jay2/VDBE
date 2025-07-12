@@ -1,6 +1,7 @@
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
+const fetch = require("node-fetch"); // To call Discord API
 
 const app = express();
 const server = http.createServer(app);
@@ -8,15 +9,29 @@ const wss = new WebSocket.Server({ server });
 
 let waitingUsers = [];
 
+async function getDiscordUsername(token) {
+  try {
+    const res = await fetch("https://discord.com/api/users/@me", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`Discord API error: ${res.status}`);
+    const user = await res.json();
+    return `${user.username}#${user.discriminator}`;
+  } catch (err) {
+    console.error("Failed to get Discord username:", err);
+    return null;
+  }
+}
+
 function send(ws, type, data) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return; // ✅ Skip if socket dead
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type, ...data }));
 }
 
 wss.on("connection", (ws) => {
   console.log("Client connected");
 
-  ws.on("message", (message) => {
+  ws.on("message", async (message) => {
     let msg;
     try {
       msg = JSON.parse(message);
@@ -26,32 +41,34 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.type === "join") {
+      const username = await getDiscordUsername(msg.token);
+      if (!username) {
+        send(ws, "status", { message: "Authentication failed." });
+        ws.close();
+        return;
+      }
+
       ws.userData = {
         rarity: msg.rarity,
-        username: msg.username || `Guest${Math.floor(Math.random() * 1000)}`,
+        username,
       };
 
       send(ws, "status", { message: "Finding match..." });
 
-      // Clean stale connections from waitingUsers
       waitingUsers = waitingUsers.filter(
         (user) => user.readyState === WebSocket.OPEN
       );
 
-      // Find opponent with matching rarity
       const opponent = waitingUsers.find(
         (user) => user !== ws && user.userData.rarity === ws.userData.rarity
       );
 
       if (opponent) {
-        // Pair them
         send(ws, "matched", { opponent: opponent.userData.username });
         send(opponent, "matched", { opponent: ws.userData.username });
 
-        // Remove opponent from waitingUsers
         waitingUsers = waitingUsers.filter((u) => u !== opponent);
       } else {
-        // No match found, add to waiting list
         waitingUsers.push(ws);
         send(ws, "status", { message: "Waiting for opponent..." });
       }
