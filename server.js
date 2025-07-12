@@ -1,24 +1,22 @@
 import express from "express";
 import http from "http";
 import WebSocket, { WebSocketServer } from "ws";
-import fetch from "node-fetch";
+import jwt from "jsonwebtoken";
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
+// Use the same secret your server uses to sign JWTs
+const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_here";
+
 let waitingUsers = [];
 
-async function getDiscordUsername(token) {
+function verifyToken(token) {
   try {
-    const res = await fetch("https://discord.com/api/users/@me", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) throw new Error(`Discord API error: ${res.status}`);
-    const user = await res.json();
-    return `${user.username}#${user.discriminator}`;
+    return jwt.verify(token, JWT_SECRET);
   } catch (err) {
-    console.error("Failed to get Discord username:", err);
+    console.error("JWT verification failed:", err);
     return null;
   }
 }
@@ -31,7 +29,7 @@ function send(ws, type, data) {
 wss.on("connection", (ws) => {
   console.log("Client connected");
 
-  ws.on("message", async (message) => {
+  ws.on("message", (message) => {
     let msg;
     try {
       msg = JSON.parse(message);
@@ -41,8 +39,8 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.type === "join") {
-      const username = await getDiscordUsername(msg.token);
-      if (!username) {
+      const payload = verifyToken(msg.token);
+      if (!payload) {
         send(ws, "status", { message: "Authentication failed." });
         ws.close();
         return;
@@ -50,7 +48,9 @@ wss.on("connection", (ws) => {
 
       ws.userData = {
         rarity: msg.rarity,
-        username,
+        username: payload.username + "#" + (payload.discriminator || "0000"),
+        id: payload.id,
+        avatar: payload.avatar,
       };
 
       send(ws, "status", { message: "Finding match..." });
