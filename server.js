@@ -1,11 +1,11 @@
 import express from "express";
 import http from "http";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import fetch from "node-fetch";
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocketServer({ server });
 
 let waitingUsers = [];
 
