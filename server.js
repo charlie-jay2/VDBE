@@ -1,15 +1,22 @@
-require("dotenv").config();
-const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
-const jwt = require("jsonwebtoken");
-const axios = require("axios");
-const cors = require("cors");
-const path = require("path");
+import dotenv from "dotenv";
+dotenv.config();
+
+import express from "express";
+import http from "http";
+import WebSocket, { WebSocketServer } from "ws";
+import jwt from "jsonwebtoken";
+import axios from "axios";
+import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// __dirname workaround for ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ noServer: true });
+const wss = new WebSocketServer({ noServer: true });
 
 const {
   DISCORD_CLIENT_ID,
