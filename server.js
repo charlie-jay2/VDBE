@@ -97,16 +97,30 @@ app.get("/auth/discord", async (req, res) => {
 // Matchmaking queues by rarity
 const matchmakingQueues = new Map();
 
+// Helper to find opponent socket of a given client
+function findOpponentSocket(ws) {
+  if (!ws.opponent) return null;
+  for (const client of wss.clients) {
+    if (
+      client !== ws &&
+      client.user &&
+      client.user.username === ws.opponent &&
+      client.readyState === WebSocket.OPEN
+    ) {
+      return client;
+    }
+  }
+  return null;
+}
+
 // WebSocket client authentication using JWT token passed as subprotocol
 function verifyClient(info, done) {
-  // The client must send the JWT token as the first subprotocol
   const protocols = info.req.headers["sec-websocket-protocol"];
   if (!protocols) {
     console.warn("❌ No token provided in WebSocket protocol header");
     return done(false, 401, "Unauthorized");
   }
 
-  // Subprotocols can be a comma-separated string; take the first
   const token = protocols.split(",")[0].trim();
 
   try {
@@ -150,6 +164,7 @@ wss.on("connection", (ws, req) => {
   ws.user = user;
   ws.rarity = null;
   ws.opponent = null;
+  ws.selection = null; // store player's selected card
 
   ws.on("message", (message) => {
     let data;
@@ -178,7 +193,7 @@ wss.on("connection", (ws, req) => {
         })
       );
 
-      // Check if there are at least 2 players to match
+      // Match if possible
       if (queue.length >= 2) {
         const [player1, player2] = queue.splice(0, 2);
 
@@ -186,7 +201,7 @@ wss.on("connection", (ws, req) => {
         player1.opponent = player2.user.username;
         player2.opponent = player1.user.username;
 
-        // Notify both clients
+        // Notify both clients with matched event and opponent username
         player1.send(
           JSON.stringify({ type: "matched", opponent: player2.user.username })
         );
@@ -196,6 +211,24 @@ wss.on("connection", (ws, req) => {
 
         console.log(
           `🔗 Matched ${player1.user.username} with ${player2.user.username} (rarity: ${rarity})`
+        );
+      }
+    } else if (data.type === "selection") {
+      // Player sends selected card name
+      const cardName = data.cardName;
+      if (!cardName) return;
+
+      ws.selection = cardName;
+
+      // Notify opponent about this player's selection
+      const opponentSocket = findOpponentSocket(ws);
+      if (opponentSocket) {
+        opponentSocket.send(
+          JSON.stringify({
+            type: "opponentSelection",
+            username: ws.user.username,
+            cardName: cardName,
+          })
         );
       }
     } else {
@@ -219,22 +252,15 @@ wss.on("connection", (ws, req) => {
 
     // Notify opponent if connected
     if (ws.opponent) {
-      // Find opponent socket
-      for (const client of wss.clients) {
-        if (
-          client.user &&
-          client.user.username === ws.opponent &&
-          client.readyState === WebSocket.OPEN
-        ) {
-          client.send(
-            JSON.stringify({
-              type: "status",
-              message: "Your opponent disconnected.",
-            })
-          );
-          client.opponent = null;
-          break;
-        }
+      const opponentSocket = findOpponentSocket(ws);
+      if (opponentSocket) {
+        opponentSocket.send(
+          JSON.stringify({
+            type: "status",
+            message: "Your opponent disconnected.",
+          })
+        );
+        opponentSocket.opponent = null;
       }
     }
   });
