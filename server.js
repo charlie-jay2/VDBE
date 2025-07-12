@@ -1,99 +1,142 @@
-import express from "express";
-import http from "http";
-import WebSocket, { WebSocketServer } from "ws";
-import jwt from "jsonwebtoken";
+require("dotenv").config();
+const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
+const jwt = require("jsonwebtoken");
+const axios = require("axios");
+const cors = require("cors");
+const path = require("path");
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocket.Server({ noServer: true });
 
-// Use the same secret your server uses to sign JWTs
-const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_here";
+const {
+  DISCORD_CLIENT_ID,
+  DISCORD_CLIENT_SECRET,
+  DISCORD_REDIRECT_URI,
+  JWT_SECRET,
+  FRONTEND_URL,
+  PORT = 3000,
+} = process.env;
 
-let waitingUsers = [];
+if (
+  !DISCORD_CLIENT_ID ||
+  !DISCORD_CLIENT_SECRET ||
+  !DISCORD_REDIRECT_URI ||
+  !JWT_SECRET ||
+  !FRONTEND_URL
+) {
+  console.error("❌ Missing environment variables!");
+  process.exit(1);
+}
 
-// Verify JWT token and return payload or null on failure
-function verifyToken(token) {
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public"))); // serve frontend
+
+// 🛠️ Discord OAuth callback
+app.get("/auth/discord", async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.status(400).send("No code provided");
+
   try {
-    return jwt.verify(token, JWT_SECRET);
+    // Exchange code for access token
+    const tokenResponse = await axios.post(
+      "https://discord.com/api/oauth2/token",
+      new URLSearchParams({
+        client_id: DISCORD_CLIENT_ID,
+        client_secret: DISCORD_CLIENT_SECRET,
+        grant_type: "authorization_code",
+        code: code,
+        redirect_uri: DISCORD_REDIRECT_URI,
+      }),
+      {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      }
+    );
+
+    const { access_token } = tokenResponse.data;
+
+    // Fetch user info
+    const userResponse = await axios.get("https://discord.com/api/users/@me", {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    const user = userResponse.data;
+
+    // Sign our own JWT
+    const jwtPayload = {
+      id: user.id,
+      username: user.username,
+      discriminator: user.discriminator,
+      avatar: user.avatar,
+    };
+
+    const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: "7d" });
+
+    console.log(`✅ Authenticated: ${user.username}#${user.discriminator}`);
+
+    // Redirect to frontend with JWT
+    res.redirect(`${FRONTEND_URL}?token=${token}`);
   } catch (err) {
-    console.error("JWT verification failed:", err.message);
-    return null;
+    console.error(
+      "❌ Discord OAuth failed:",
+      err.response?.data || err.message
+    );
+    res.status(500).send("Discord authentication failed");
+  }
+});
+
+// 🌐 Serve SPA (for React/Vue/etc.)
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "public/index.html"));
+});
+
+// 🕵️‍♂️ WebSocket authentication
+function verifyClient(info, done) {
+  const authHeader = info.req.headers["sec-websocket-protocol"];
+  if (!authHeader) {
+    console.warn("❌ No token provided in WebSocket protocol header");
+    return done(false, 401, "Unauthorized");
+  }
+
+  const token = authHeader.split(",")[0].trim(); // client sends JWT here
+
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
+    info.req.user = user; // attach user info for handlers
+    console.log(`✅ WS Authenticated: ${user.username}#${user.discriminator}`);
+    done(true);
+  } catch (err) {
+    console.error("❌ WS JWT verification failed:", err.message);
+    done(false, 401, "Invalid token");
   }
 }
 
-// Send JSON message to a client
-function send(ws, type, data) {
-  if (ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ type, ...data }));
-}
-
-wss.on("connection", (ws) => {
-  console.log("Client connected");
-
-  ws.on("message", (message) => {
-    let msg;
-    try {
-      msg = JSON.parse(message);
-    } catch (e) {
-      console.error("Invalid JSON received:", e.message);
-      return;
-    }
-
-    if (msg.type === "join") {
-      const payload = verifyToken(msg.token);
-      if (!payload) {
-        send(ws, "status", { message: "Authentication failed." });
-        ws.close();
-        return;
-      }
-
-      ws.userData = {
-        rarity: msg.rarity,
-        username: `${payload.username}#${payload.discriminator || "0000"}`,
-        id: payload.id,
-        avatar: payload.avatar,
-      };
-
-      send(ws, "status", { message: "Finding match..." });
-
-      // Remove disconnected users
-      waitingUsers = waitingUsers.filter(
-        (user) => user.readyState === WebSocket.OPEN
-      );
-
-      // Look for an opponent with the same rarity, but not self
-      const opponent = waitingUsers.find(
-        (user) => user !== ws && user.userData.rarity === ws.userData.rarity
-      );
-
-      if (opponent) {
-        // Notify both clients about the match
-        send(ws, "matched", { opponent: opponent.userData.username });
-        send(opponent, "matched", { opponent: ws.userData.username });
-
-        // Remove opponent from waiting list (both now matched)
-        waitingUsers = waitingUsers.filter((u) => u !== opponent);
-      } else {
-        // No opponent found, add self to waiting list
-        waitingUsers.push(ws);
-        send(ws, "status", { message: "Waiting for opponent..." });
-      }
-    }
-  });
-
-  ws.on("close", () => {
-    console.log("Client disconnected");
-    // Remove user from waiting list if they were waiting
-    waitingUsers = waitingUsers.filter((u) => u !== ws);
-  });
-
-  ws.on("error", (err) => {
-    console.error("WebSocket error:", err.message);
+// 🚀 Upgrade HTTP server to handle WS connections
+server.on("upgrade", (req, socket, head) => {
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, req);
   });
 });
 
-const PORT = process.env.PORT || 8080;
+// 🎯 WebSocket handlers
+wss.on("connection", (ws, req) => {
+  const user = req.user;
+  ws.send(`👋 Welcome ${user.username}#${user.discriminator}`);
+
+  ws.on("message", (message) => {
+    console.log(`📨 ${user.username}:`, message.toString());
+    ws.send(`You said: ${message}`);
+  });
+
+  ws.on("close", () => {
+    console.log(`🔌 Disconnected: ${user.username}`);
+  });
+});
+
+// Start server
 server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`🌐 Server running on http://localhost:${PORT}`);
 });
