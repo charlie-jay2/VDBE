@@ -39,7 +39,7 @@ if (
   process.exit(1);
 }
 
-app.use(helmet()); // Add helmet middleware for security
+app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
@@ -49,7 +49,6 @@ app.get("/auth/discord", async (req, res) => {
   if (!code) return res.status(400).send("No code provided");
 
   try {
-    // Exchange code for access token
     const tokenResponse = await axios.post(
       "https://discord.com/api/oauth2/token",
       new URLSearchParams({
@@ -66,14 +65,12 @@ app.get("/auth/discord", async (req, res) => {
 
     const { access_token } = tokenResponse.data;
 
-    // Fetch user info
     const userResponse = await axios.get("https://discord.com/api/users/@me", {
       headers: { Authorization: `Bearer ${access_token}` },
     });
 
     const user = userResponse.data;
 
-    // Sign our own JWT
     const jwtPayload = {
       id: user.id,
       username: user.username,
@@ -85,7 +82,6 @@ app.get("/auth/discord", async (req, res) => {
 
     console.log(`✅ Authenticated: ${user.username}#${user.discriminator}`);
 
-    // Redirect to frontend with JWT token in URL
     res.redirect(`${FRONTEND_URL}?token=${token}`);
   } catch (err) {
     console.error(
@@ -96,7 +92,6 @@ app.get("/auth/discord", async (req, res) => {
   }
 });
 
-// Matchmaking queues by rarity
 const matchmakingQueues = new Map();
 
 // Helper to find opponent socket of a given client
@@ -127,7 +122,7 @@ function verifyClient(info, done) {
 
   try {
     const user = jwt.verify(token, JWT_SECRET);
-    info.req.user = user; // attach user info to request
+    info.req.user = user;
     console.log(`✅ WS Authenticated: ${user.username}#${user.discriminator}`);
     done(true);
   } catch (err) {
@@ -136,7 +131,6 @@ function verifyClient(info, done) {
   }
 }
 
-// Upgrade HTTP server for WebSocket connections
 server.on("upgrade", (req, socket, head) => {
   verifyClient({ req }, (auth, code, message) => {
     if (!auth) {
@@ -150,11 +144,9 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
-// WebSocket connection handler
 wss.on("connection", (ws, req) => {
   const user = req.user;
 
-  // Send welcome message as JSON for frontend parsing
   ws.send(
     JSON.stringify({
       type: "welcome",
@@ -162,11 +154,10 @@ wss.on("connection", (ws, req) => {
     })
   );
 
-  // Store user info and matched opponent
   ws.user = user;
   ws.rarity = null;
   ws.opponent = null;
-  ws.selection = null; // store player's selected card
+  ws.selection = null;
 
   ws.on("message", (message) => {
     let data;
@@ -195,20 +186,29 @@ wss.on("connection", (ws, req) => {
         })
       );
 
-      // Match if possible
       if (queue.length >= 2) {
         const [player1, player2] = queue.splice(0, 2);
 
-        // Set opponents
         player1.opponent = player2.user.username;
         player2.opponent = player1.user.username;
 
-        // Notify both clients with matched event and opponent username
+        // Mark player1 and player2 roles
+        player1.role = "Player One";
+        player2.role = "Player Two";
+
         player1.send(
-          JSON.stringify({ type: "matched", opponent: player2.user.username })
+          JSON.stringify({
+            type: "matched",
+            opponent: player2.user.username,
+            role: player1.role,
+          })
         );
         player2.send(
-          JSON.stringify({ type: "matched", opponent: player1.user.username })
+          JSON.stringify({
+            type: "matched",
+            opponent: player1.user.username,
+            role: player2.role,
+          })
         );
 
         console.log(
@@ -216,13 +216,12 @@ wss.on("connection", (ws, req) => {
         );
       }
     } else if (data.type === "selection") {
-      // Player sends selected card name
       const cardName = data.cardName;
       if (!cardName) return;
 
       ws.selection = cardName;
 
-      // Notify opponent about this player's selection
+      // Send the selection to the opponent with sender username and role
       const opponentSocket = findOpponentSocket(ws);
       if (opponentSocket) {
         opponentSocket.send(
@@ -234,7 +233,6 @@ wss.on("connection", (ws, req) => {
         );
       }
     } else {
-      // Echo other messages for now
       console.log(`📨 ${user.username}:`, message);
       ws.send(`You said: ${message}`);
     }
@@ -243,7 +241,6 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => {
     console.log(`🔌 Disconnected: ${user.username}`);
 
-    // Remove from matchmaking queue if still waiting
     if (ws.rarity && matchmakingQueues.has(ws.rarity)) {
       const queue = matchmakingQueues.get(ws.rarity);
       const index = queue.indexOf(ws);
@@ -252,7 +249,6 @@ wss.on("connection", (ws, req) => {
       }
     }
 
-    // Notify opponent if connected
     if (ws.opponent) {
       const opponentSocket = findOpponentSocket(ws);
       if (opponentSocket) {
