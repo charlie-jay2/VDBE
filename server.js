@@ -6,9 +6,10 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const waitingUsers = [];
+let waitingUsers = [];
 
 function send(ws, type, data) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return; // ✅ Skip if socket dead
   ws.send(JSON.stringify({ type, ...data }));
 }
 
@@ -20,41 +21,50 @@ wss.on("connection", (ws) => {
     try {
       msg = JSON.parse(message);
     } catch (e) {
-      console.error("Invalid message", e);
+      console.error("Invalid JSON:", e);
       return;
     }
 
     if (msg.type === "join") {
       ws.userData = {
         rarity: msg.rarity,
-        username: msg.username || "Unknown",
+        username: msg.username || `Guest${Math.floor(Math.random() * 1000)}`,
       };
 
       send(ws, "status", { message: "Finding match..." });
 
-      let matchedIndex = waitingUsers.findIndex(
-        (user) => user.ws !== ws && user.userData.rarity === ws.userData.rarity
+      // Clean stale connections from waitingUsers
+      waitingUsers = waitingUsers.filter(
+        (user) => user.readyState === WebSocket.OPEN
       );
 
-      if (matchedIndex !== -1) {
-        const matchedUser = waitingUsers.splice(matchedIndex, 1)[0];
-        const selfIndex = waitingUsers.findIndex((u) => u.ws === ws);
-        if (selfIndex !== -1) waitingUsers.splice(selfIndex, 1);
+      // Find opponent with matching rarity
+      const opponent = waitingUsers.find(
+        (user) => user !== ws && user.userData.rarity === ws.userData.rarity
+      );
 
-        send(ws, "matched", { opponent: matchedUser.userData.username });
-        send(matchedUser.ws, "matched", { opponent: ws.userData.username });
+      if (opponent) {
+        // Pair them
+        send(ws, "matched", { opponent: opponent.userData.username });
+        send(opponent, "matched", { opponent: ws.userData.username });
+
+        // Remove opponent from waitingUsers
+        waitingUsers = waitingUsers.filter((u) => u !== opponent);
       } else {
+        // No match found, add to waiting list
         waitingUsers.push(ws);
+        send(ws, "status", { message: "Waiting for opponent..." });
       }
     }
   });
 
   ws.on("close", () => {
-    const index = waitingUsers.indexOf(ws);
-    if (index !== -1) {
-      waitingUsers.splice(index, 1);
-    }
     console.log("Client disconnected");
+    waitingUsers = waitingUsers.filter((u) => u !== ws);
+  });
+
+  ws.on("error", (err) => {
+    console.error("WebSocket error:", err);
   });
 });
 
