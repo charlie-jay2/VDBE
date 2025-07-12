@@ -94,6 +94,9 @@ app.get("/auth/discord", async (req, res) => {
   }
 });
 
+// Matchmaking queues by rarity
+const matchmakingQueues = new Map();
+
 // WebSocket client authentication using JWT token passed as subprotocol
 function verifyClient(info, done) {
   // The client must send the JWT token as the first subprotocol
@@ -134,15 +137,106 @@ server.on("upgrade", (req, socket, head) => {
 // WebSocket connection handler
 wss.on("connection", (ws, req) => {
   const user = req.user;
-  ws.send(`👋 Welcome ${user.username}#${user.discriminator}`);
+
+  // Send welcome message as JSON for frontend parsing
+  ws.send(
+    JSON.stringify({
+      type: "welcome",
+      message: `👋 Welcome ${user.username}#${user.discriminator}`,
+    })
+  );
+
+  // Store user info and matched opponent
+  ws.user = user;
+  ws.rarity = null;
+  ws.opponent = null;
 
   ws.on("message", (message) => {
-    console.log(`📨 ${user.username}:`, message.toString());
-    ws.send(`You said: ${message}`);
+    let data;
+    try {
+      data = JSON.parse(message);
+    } catch {
+      console.warn("Received non-JSON message:", message);
+      return;
+    }
+
+    if (data.type === "join") {
+      const rarity = data.rarity || "Unknown";
+      ws.rarity = rarity;
+
+      if (!matchmakingQueues.has(rarity)) {
+        matchmakingQueues.set(rarity, []);
+      }
+
+      const queue = matchmakingQueues.get(rarity);
+      queue.push(ws);
+
+      ws.send(
+        JSON.stringify({
+          type: "status",
+          message: `Waiting for opponent of rarity: ${rarity}`,
+        })
+      );
+
+      // Check if there are at least 2 players to match
+      if (queue.length >= 2) {
+        const [player1, player2] = queue.splice(0, 2);
+
+        // Set opponents
+        player1.opponent = player2.user.username;
+        player2.opponent = player1.user.username;
+
+        // Notify both clients
+        player1.send(
+          JSON.stringify({ type: "matched", opponent: player2.user.username })
+        );
+        player2.send(
+          JSON.stringify({ type: "matched", opponent: player1.user.username })
+        );
+
+        console.log(
+          `🔗 Matched ${player1.user.username} with ${player2.user.username} (rarity: ${rarity})`
+        );
+      }
+    } else {
+      // Echo other messages for now
+      console.log(`📨 ${user.username}:`, message);
+      ws.send(`You said: ${message}`);
+    }
   });
 
   ws.on("close", () => {
     console.log(`🔌 Disconnected: ${user.username}`);
+
+    // Remove from matchmaking queue if still waiting
+    if (ws.rarity && matchmakingQueues.has(ws.rarity)) {
+      const queue = matchmakingQueues.get(ws.rarity);
+      const index = queue.indexOf(ws);
+      if (index !== -1) {
+        queue.splice(index, 1);
+      }
+    }
+
+    // Notify opponent if connected
+    if (ws.opponent) {
+      // Find opponent socket
+      for (const client of wss.clients) {
+        if (
+          client.user &&
+          client.user.username === ws.opponent &&
+          client.readyState === WebSocket.OPEN
+        ) {
+          client.send(
+            JSON.stringify({
+              type: "status",
+              message: "Your opponent disconnected.",
+            })
+          );
+          client.opponent = null;
+          break;
+        }
+      }
+    }
   });
 });
 
