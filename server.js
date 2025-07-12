@@ -7,12 +7,6 @@ import WebSocket, { WebSocketServer } from "ws";
 import jwt from "jsonwebtoken";
 import axios from "axios";
 import cors from "cors";
-import path from "path";
-import { fileURLToPath } from "url";
-
-// __dirname workaround for ESM
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
@@ -24,7 +18,7 @@ const {
   DISCORD_REDIRECT_URI,
   JWT_SECRET,
   FRONTEND_URL,
-  PORT = 3000,
+  PORT = 8080,
 } = process.env;
 
 if (
@@ -40,7 +34,6 @@ if (
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public"))); // serve frontend
 
 // 🛠️ Discord OAuth callback
 app.get("/auth/discord", async (req, res) => {
@@ -95,11 +88,6 @@ app.get("/auth/discord", async (req, res) => {
   }
 });
 
-// 🌐 Serve SPA (for React/Vue/etc.)
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/index.html"));
-});
-
 // 🕵️‍♂️ WebSocket authentication
 function verifyClient(info, done) {
   const authHeader = info.req.headers["sec-websocket-protocol"];
@@ -145,5 +133,5 @@ wss.on("connection", (ws, req) => {
 
 // Start server
 server.listen(PORT, () => {
-  console.log(`🌐 Server running on http://localhost:${PORT}`);
+  console.log(`🌐 API Server running on port ${PORT}`);
 });
