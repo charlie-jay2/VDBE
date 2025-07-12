@@ -7,6 +7,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import jwt from "jsonwebtoken";
 import axios from "axios";
 import cors from "cors";
+import helmet from "helmet";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -38,6 +39,7 @@ if (
   process.exit(1);
 }
 
+app.use(helmet()); // Add helmet middleware for security
 app.use(cors());
 app.use(express.json());
 
