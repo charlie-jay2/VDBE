@@ -41,7 +41,7 @@ if (
 app.use(cors());
 app.use(express.json());
 
-// 🛠️ Discord OAuth callback
+// Discord OAuth callback
 app.get("/auth/discord", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("No code provided");
@@ -83,7 +83,7 @@ app.get("/auth/discord", async (req, res) => {
 
     console.log(`✅ Authenticated: ${user.username}#${user.discriminator}`);
 
-    // Redirect to frontend with JWT
+    // Redirect to frontend with JWT token in URL
     res.redirect(`${FRONTEND_URL}?token=${token}`);
   } catch (err) {
     console.error(
@@ -94,19 +94,21 @@ app.get("/auth/discord", async (req, res) => {
   }
 });
 
-// 🕵️‍♂️ WebSocket authentication function
+// WebSocket client authentication using JWT token passed as subprotocol
 function verifyClient(info, done) {
-  const authHeader = info.req.headers["sec-websocket-protocol"];
-  if (!authHeader) {
+  // The client must send the JWT token as the first subprotocol
+  const protocols = info.req.headers["sec-websocket-protocol"];
+  if (!protocols) {
     console.warn("❌ No token provided in WebSocket protocol header");
     return done(false, 401, "Unauthorized");
   }
 
-  const token = authHeader.split(",")[0].trim(); // client sends JWT here
+  // Subprotocols can be a comma-separated string; take the first
+  const token = protocols.split(",")[0].trim();
 
   try {
     const user = jwt.verify(token, JWT_SECRET);
-    info.req.user = user; // attach user info for handlers
+    info.req.user = user; // attach user info to request
     console.log(`✅ WS Authenticated: ${user.username}#${user.discriminator}`);
     done(true);
   } catch (err) {
@@ -115,24 +117,21 @@ function verifyClient(info, done) {
   }
 }
 
-// 🚀 Upgrade HTTP server to handle WS connections with auth
+// Upgrade HTTP server for WebSocket connections
 server.on("upgrade", (req, socket, head) => {
-  verifyClient({ req }, (verified, code, message) => {
-    if (!verified) {
-      socket.write(
-        `HTTP/1.1 ${code} ${message}\r\n` + "Connection: close\r\n\r\n"
-      );
+  verifyClient({ req }, (auth, code, message) => {
+    if (!auth) {
+      socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
       return;
     }
-
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
     });
   });
 });
 
-// 🎯 WebSocket handlers
+// WebSocket connection handler
 wss.on("connection", (ws, req) => {
   const user = req.user;
   ws.send(`👋 Welcome ${user.username}#${user.discriminator}`);
@@ -147,7 +146,6 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-// Start server
 server.listen(PORT, () => {
   console.log(`🌐 Server running on http://localhost:${PORT}`);
 });
