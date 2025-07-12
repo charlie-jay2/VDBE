@@ -12,17 +12,19 @@ const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_here";
 
 let waitingUsers = [];
 
+// Verify JWT token and return payload or null on failure
 function verifyToken(token) {
   try {
     return jwt.verify(token, JWT_SECRET);
   } catch (err) {
-    console.error("JWT verification failed:", err);
+    console.error("JWT verification failed:", err.message);
     return null;
   }
 }
 
+// Send JSON message to a client
 function send(ws, type, data) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type, ...data }));
 }
 
@@ -34,7 +36,7 @@ wss.on("connection", (ws) => {
     try {
       msg = JSON.parse(message);
     } catch (e) {
-      console.error("Invalid JSON:", e);
+      console.error("Invalid JSON received:", e.message);
       return;
     }
 
@@ -48,27 +50,32 @@ wss.on("connection", (ws) => {
 
       ws.userData = {
         rarity: msg.rarity,
-        username: payload.username + "#" + (payload.discriminator || "0000"),
+        username: `${payload.username}#${payload.discriminator || "0000"}`,
         id: payload.id,
         avatar: payload.avatar,
       };
 
       send(ws, "status", { message: "Finding match..." });
 
+      // Remove disconnected users
       waitingUsers = waitingUsers.filter(
         (user) => user.readyState === WebSocket.OPEN
       );
 
+      // Look for an opponent with the same rarity, but not self
       const opponent = waitingUsers.find(
         (user) => user !== ws && user.userData.rarity === ws.userData.rarity
       );
 
       if (opponent) {
+        // Notify both clients about the match
         send(ws, "matched", { opponent: opponent.userData.username });
         send(opponent, "matched", { opponent: ws.userData.username });
 
+        // Remove opponent from waiting list (both now matched)
         waitingUsers = waitingUsers.filter((u) => u !== opponent);
       } else {
+        // No opponent found, add self to waiting list
         waitingUsers.push(ws);
         send(ws, "status", { message: "Waiting for opponent..." });
       }
@@ -77,11 +84,12 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     console.log("Client disconnected");
+    // Remove user from waiting list if they were waiting
     waitingUsers = waitingUsers.filter((u) => u !== ws);
   });
 
   ws.on("error", (err) => {
-    console.error("WebSocket error:", err);
+    console.error("WebSocket error:", err.message);
   });
 });
 
