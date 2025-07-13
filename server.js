@@ -17,7 +17,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ server }); // ✅ Directly attach WS to HTTP server
 
 const {
   DISCORD_CLIENT_ID,
@@ -110,54 +110,36 @@ function findOpponentSocket(ws) {
   return null;
 }
 
-// WebSocket client authentication using JWT token passed as subprotocol
-function verifyClient(info, done) {
-  const protocols = info.req.headers["sec-websocket-protocol"];
-  if (!protocols) {
-    console.warn("❌ No token provided in WebSocket protocol header");
-    return done(false, 401, "Unauthorized");
-  }
+wss.on("connection", (ws, req) => {
+  const urlParams = new URLSearchParams(req.url.replace(/^.*\?/, ""));
+  const token = urlParams.get("token");
 
-  const token = protocols.split(",")[0].trim();
+  if (!token) {
+    console.warn("❌ No token provided in query params");
+    ws.close(1008, "Unauthorized");
+    return;
+  }
 
   try {
     const user = jwt.verify(token, JWT_SECRET);
-    info.req.user = user;
+    ws.user = user;
     console.log(`✅ WS Authenticated: ${user.username}#${user.discriminator}`);
-    done(true);
   } catch (err) {
     console.error("❌ WS JWT verification failed:", err.message);
-    done(false, 401, "Invalid token");
+    ws.close(1008, "Invalid token");
+    return;
   }
-}
 
-server.on("upgrade", (req, socket, head) => {
-  verifyClient({ req }, (auth, code, message) => {
-    if (!auth) {
-      socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`);
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit("connection", ws, req);
-    });
-  });
-});
-
-wss.on("connection", (ws, req) => {
-  const user = req.user;
+  ws.rarity = null;
+  ws.opponent = null;
+  ws.selection = null;
 
   ws.send(
     JSON.stringify({
       type: "welcome",
-      message: `👋 Welcome ${user.username}#${user.discriminator}`,
+      message: `👋 Welcome ${ws.user.username}#${ws.user.discriminator}`,
     })
   );
-
-  ws.user = user;
-  ws.rarity = null;
-  ws.opponent = null;
-  ws.selection = null;
 
   ws.on("message", (message) => {
     let data;
@@ -192,7 +174,6 @@ wss.on("connection", (ws, req) => {
         player1.opponent = player2.user.username;
         player2.opponent = player1.user.username;
 
-        // Mark player1 and player2 roles
         player1.role = "Player One";
         player2.role = "Player Two";
 
@@ -221,7 +202,6 @@ wss.on("connection", (ws, req) => {
 
       ws.selection = cardName;
 
-      // Send the selection to the opponent with sender username and role
       const opponentSocket = findOpponentSocket(ws);
       if (opponentSocket) {
         opponentSocket.send(
@@ -233,13 +213,13 @@ wss.on("connection", (ws, req) => {
         );
       }
     } else {
-      console.log(`📨 ${user.username}:`, message);
+      console.log(`📨 ${ws.user.username}:`, message);
       ws.send(`You said: ${message}`);
     }
   });
 
   ws.on("close", () => {
-    console.log(`🔌 Disconnected: ${user.username}`);
+    console.log(`🔌 Disconnected: ${ws.user.username}`);
 
     if (ws.rarity && matchmakingQueues.has(ws.rarity)) {
       const queue = matchmakingQueues.get(ws.rarity);
