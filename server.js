@@ -90,27 +90,22 @@ app.get("/auth/discord", async (req, res) => {
   }
 });
 
+// 🌟 Tracks players waiting by rarity
 const matchmakingQueues = new Map();
 
+// 🌟 Tracks active matches (username -> opponentSocket)
+const matches = new Map();
+
+// Find the opponent's WebSocket
 function findOpponentSocket(ws) {
-  if (!ws.opponent) return null;
-  for (const client of wss.clients) {
-    if (
-      client !== ws &&
-      client.user &&
-      client.user.username === ws.opponent &&
-      client.readyState === WebSocket.OPEN
-    ) {
-      return client;
-    }
-  }
-  return null;
+  return matches.get(ws.user.username) || null;
 }
 
 // 💓 Heartbeat (keep sockets alive)
 function heartbeat() {
   this.isAlive = true;
 }
+
 wss.on("connection", (ws, req) => {
   ws.isAlive = true;
   ws.on("pong", heartbeat);
@@ -135,7 +130,6 @@ wss.on("connection", (ws, req) => {
   }
 
   ws.rarity = null;
-  ws.opponent = null;
 
   ws.send(
     JSON.stringify({
@@ -184,11 +178,12 @@ wss.on("connection", (ws, req) => {
       if (queue.length >= 2) {
         const [player1, player2] = queue.splice(0, 2);
 
-        player1.opponent = player2.user.username;
-        player2.opponent = player1.user.username;
-
         player1.role = "Player One";
         player2.role = "Player Two";
+
+        // 👥 Save active match pairings
+        matches.set(player1.user.username, player2);
+        matches.set(player2.user.username, player1);
 
         player1.send(
           JSON.stringify({
@@ -221,7 +216,7 @@ wss.on("connection", (ws, req) => {
       console.log(`🃏 ${ws.user.username} selected: ${cardName}`);
 
       const opponentSocket = findOpponentSocket(ws);
-      if (opponentSocket) {
+      if (opponentSocket && opponentSocket.readyState === WebSocket.OPEN) {
         console.log(
           `📡 Relaying ${ws.user.username}'s card to ${opponentSocket.user.username}`
         );
@@ -250,20 +245,21 @@ wss.on("connection", (ws, req) => {
       );
     }
 
-    if (ws.opponent) {
-      const opponentSocket = findOpponentSocket(ws);
-      if (opponentSocket) {
-        console.log(
-          `⚠️ Notifying ${opponentSocket.user.username} that opponent disconnected`
-        );
-        opponentSocket.send(
-          JSON.stringify({
-            type: "status",
-            message: "⚠️ Your opponent disconnected. Waiting to reconnect...",
-          })
-        );
-        // Do NOT clear opponentSocket.opponent so they can reconnect
-      }
+    const opponentSocket = findOpponentSocket(ws);
+    if (opponentSocket) {
+      console.log(
+        `⚠️ Notifying ${opponentSocket.user.username} that opponent disconnected`
+      );
+      opponentSocket.send(
+        JSON.stringify({
+          type: "status",
+          message: "⚠️ Your opponent disconnected. Waiting to reconnect...",
+        })
+      );
+
+      // 🗑 Clean up match pairings
+      matches.delete(ws.user.username);
+      matches.delete(opponentSocket.user.username);
     }
   });
 
