@@ -190,13 +190,24 @@ wss.on("connection", (ws, req) => {
     prevState.socket = ws;
     prevState.isConnected = true;
 
-    // Update matches map to point to new socket
+    // Update matches map to point to new socket correctly
     const opponentSocket = matches.get(user.username);
     if (opponentSocket) {
-      matches.set(user.username, ws);
-      matches.set(opponentSocket.user.username, opponentSocket);
+      const opponentName = opponentSocket.user.username;
+
+      // Update matches: user's opponent stays the same
+      matches.set(user.username, opponentSocket);
+      // Opponent's opponent is this new socket
+      matches.set(opponentName, ws);
+
+      // Update playerStates with new socket references
+      const opponentState = playerStates.get(opponentName);
+      if (opponentState) opponentState.socket = opponentSocket;
+      const playerState = playerStates.get(user.username);
+      if (playerState) playerState.socket = ws;
+
       console.log(
-        `🔄 Updated match sockets for ${user.username} and ${opponentSocket.user.username}`
+        `🔄 Updated match sockets for ${user.username} and ${opponentName}`
       );
 
       // Notify opponent the player has reconnected
@@ -212,7 +223,7 @@ wss.on("connection", (ws, req) => {
       ws.send(
         JSON.stringify({
           type: "status",
-          message: `✅ Reconnected to match with ${opponentSocket.user.username}.`,
+          message: `✅ Reconnected to match with ${opponentName}.`,
         })
       );
     } else {
@@ -358,80 +369,53 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     const username = ws.user.username;
-    console.log(`🔌 Disconnected: ${username}`);
+    console.log(`🔌 Connection closed: ${username}`);
 
-    // Mark as disconnected in playerStates and start 1-minute timer to cleanup
     const state = playerStates.get(username);
-    if (state) {
-      state.isConnected = false;
-      state.disconnectTimeout = setTimeout(() => {
-        // Check if both players disconnected
-        const opponentSocket = matches.get(username);
-        if (opponentSocket) {
-          const opponentName = opponentSocket.user.username;
-          const opponentState = playerStates.get(opponentName);
+    if (!state) {
+      console.log(`⚠️ No state found on close for ${username}`);
+      return;
+    }
 
-          if (!opponentState || opponentState.isConnected === false) {
-            // Both disconnected, cleanup match
-            cleanupMatch(username);
-          } else {
-            // Opponent still connected, do not cleanup yet
-            console.log(
-              `⏳ Waiting on opponent ${opponentName} to disconnect before cleanup`
-            );
-          }
-        } else {
-          // No opponent, cleanup just this player
-          playerStates.delete(username);
-          console.log(
-            `🗑 Cleaned up player state for ${username} (no opponent)`
-          );
+    state.isConnected = false;
+
+    // Set a timeout to clean up after 60 seconds if no reconnect
+    state.disconnectTimeout = setTimeout(() => {
+      console.log(`⏳ Cleaning up after disconnect timeout for ${username}`);
+
+      // Remove from matchmaking queue if present
+      for (const [rarity, queue] of matchmakingQueues.entries()) {
+        const index = queue.indexOf(ws);
+        if (index !== -1) {
+          queue.splice(index, 1);
+          console.log(`🗑 Removed ${username} from queue (${rarity})`);
+          break;
         }
-      }, 60 * 1000); // 1 minute
-    }
+      }
 
-    // Remove from matchmaking queue if present
-    if (ws.rarity && matchmakingQueues.has(ws.rarity)) {
-      const queue = matchmakingQueues.get(ws.rarity);
-      const index = queue.indexOf(ws);
-      if (index !== -1) queue.splice(index, 1);
-      console.log(`📤 Removed ${username} from queue (rarity: ${ws.rarity})`);
-    }
+      // Clean up match if in one
+      cleanupMatch(username);
 
-    // Notify opponent if connected that player disconnected
-    const opponentSocket = matches.get(username);
-    if (opponentSocket && opponentSocket.readyState === WebSocket.OPEN) {
-      console.log(
-        `⚠️ Notifying ${opponentSocket.user.username} that opponent disconnected`
-      );
-      opponentSocket.send(
-        JSON.stringify({
-          type: "status",
-          message: "⚠️ Your opponent disconnected. Waiting to reconnect...",
-        })
-      );
-    }
-  });
+      // Remove player state
+      playerStates.delete(username);
 
-  ws.on("error", (err) => {
-    console.error(`❌ Error for ${ws.user.username}:`, err.message);
+      console.log(`🧹 Cleaned up player state for ${username}`);
+    }, 60000);
   });
 });
 
-// Heartbeat interval
+// Heartbeat to detect dead connections
 const interval = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
-      console.warn(`💀 Terminating dead connection: ${ws.user?.username}`);
+      console.log(`💀 Terminating dead connection: ${ws.user?.username}`);
       return ws.terminate();
     }
     ws.isAlive = false;
-    ws.ping();
+    ws.ping(() => {});
   });
 }, 30000);
 
-wss.on("close", () => clearInterval(interval));
-
 server.listen(PORT, () => {
-  console.log(`🌐 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
