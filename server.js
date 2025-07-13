@@ -11,13 +11,12 @@ import helmet from "helmet";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// __dirname workaround for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server }); // Attach WS to HTTP server
+const wss = new WebSocketServer({ server });
 
 const {
   DISCORD_CLIENT_ID,
@@ -43,7 +42,6 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
-// Discord OAuth callback
 app.get("/auth/discord", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("No code provided");
@@ -131,7 +129,6 @@ wss.on("connection", (ws, req) => {
 
   ws.rarity = null;
   ws.opponent = null;
-  ws.selection = null;
 
   ws.send(
     JSON.stringify({
@@ -145,7 +142,7 @@ wss.on("connection", (ws, req) => {
     try {
       data = JSON.parse(message);
     } catch {
-      console.warn("Received non-JSON message:", message);
+      console.warn("⚠️ Non-JSON message:", message);
       return;
     }
 
@@ -201,8 +198,6 @@ wss.on("connection", (ws, req) => {
       const cardName = data.cardName;
       if (!cardName) return;
 
-      ws.selection = cardName;
-
       const opponentSocket = findOpponentSocket(ws);
       if (opponentSocket) {
         opponentSocket.send(
@@ -213,9 +208,6 @@ wss.on("connection", (ws, req) => {
           })
         );
       }
-    } else {
-      console.log(`📨 ${ws.user.username}:`, message);
-      ws.send(`You said: ${message}`);
     }
   });
 
@@ -225,9 +217,7 @@ wss.on("connection", (ws, req) => {
     if (ws.rarity && matchmakingQueues.has(ws.rarity)) {
       const queue = matchmakingQueues.get(ws.rarity);
       const index = queue.indexOf(ws);
-      if (index !== -1) {
-        queue.splice(index, 1);
-      }
+      if (index !== -1) queue.splice(index, 1);
     }
 
     if (ws.opponent) {
