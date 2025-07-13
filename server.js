@@ -180,6 +180,7 @@ wss.on("connection", (ws, req) => {
           JSON.stringify({
             type: "matched",
             opponent: player2.user.username,
+            yourName: player1.user.username,
             role: player1.role,
           })
         );
@@ -187,6 +188,7 @@ wss.on("connection", (ws, req) => {
           JSON.stringify({
             type: "matched",
             opponent: player1.user.username,
+            yourName: player2.user.username,
             role: player2.role,
           })
         );
