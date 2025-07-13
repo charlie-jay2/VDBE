@@ -96,23 +96,59 @@ const matchmakingQueues = new Map();
 // 🌟 Tracks active matches (username -> opponentSocket)
 const matches = new Map();
 
-// Helper: Check if socket is open
-function isSocketOpen(socket) {
-  return socket && socket.readyState === WebSocket.OPEN;
-}
+// 🌟 Tracks player states for reconnect and cleanup
+// Structure:
+// {
+//   socket: WebSocket,
+//   isConnected: boolean,
+//   disconnectTimeout: NodeJS.Timeout | null,
+// }
+const playerStates = new Map();
 
-// Find the opponent's WebSocket if still open, else return null
 function findOpponentSocket(ws) {
   const opponent = matches.get(ws.user.username);
-  if (!isSocketOpen(opponent)) {
+  if (!opponent) {
+    console.log(`❌ No opponent found in matches for ${ws.user.username}`);
     return null;
   }
+  if (opponent.readyState !== WebSocket.OPEN) {
+    console.log(`❌ Opponent socket for ${ws.user.username} is not open`);
+    return null;
+  }
+  console.log(
+    `✅ Opponent socket found for ${ws.user.username}: ${opponent.user.username}`
+  );
   return opponent;
 }
 
-// 💓 Heartbeat (keep sockets alive)
+// Mark socket alive for heartbeat
 function heartbeat() {
   this.isAlive = true;
+}
+
+// Helper to clear disconnect timer if exists
+function clearDisconnectTimer(username) {
+  const state = playerStates.get(username);
+  if (state && state.disconnectTimeout) {
+    clearTimeout(state.disconnectTimeout);
+    state.disconnectTimeout = null;
+  }
+}
+
+// Helper to cleanup a match
+function cleanupMatch(username) {
+  const opponentSocket = matches.get(username);
+  if (!opponentSocket) return;
+
+  const opponentName = opponentSocket.user.username;
+
+  matches.delete(username);
+  matches.delete(opponentName);
+
+  playerStates.delete(username);
+  playerStates.delete(opponentName);
+
+  console.log(`🗑 Cleaned up match between ${username} and ${opponentName}`);
 }
 
 wss.on("connection", (ws, req) => {
@@ -128,8 +164,9 @@ wss.on("connection", (ws, req) => {
     return;
   }
 
+  let user;
   try {
-    const user = jwt.verify(token, JWT_SECRET);
+    user = jwt.verify(token, JWT_SECRET);
     ws.user = user;
     console.log(`✅ WS Authenticated: ${user.username}#${user.discriminator}`);
   } catch (err) {
@@ -140,16 +177,70 @@ wss.on("connection", (ws, req) => {
 
   ws.rarity = null;
 
-  ws.send(
-    JSON.stringify({
-      type: "welcome",
-      message: `👋 Welcome ${ws.user.username}#${ws.user.discriminator}`,
-    })
-  );
+  // --- Reconnect handling ---
+  // Check if this user has a state and a disconnected socket
+  const prevState = playerStates.get(user.username);
+  if (prevState && !prevState.isConnected) {
+    console.log(`🔄 Reconnection detected for ${user.username}`);
 
-  console.log(
-    `🔗 New connection: ${ws.user.username}#${ws.user.discriminator}`
-  );
+    // Cancel any pending cleanup timeout for this player
+    clearDisconnectTimer(user.username);
+
+    // Update state with new socket and connected flag
+    prevState.socket = ws;
+    prevState.isConnected = true;
+
+    // Update matches map to point to new socket
+    const opponentSocket = matches.get(user.username);
+    if (opponentSocket) {
+      matches.set(user.username, ws);
+      matches.set(opponentSocket.user.username, opponentSocket);
+      console.log(
+        `🔄 Updated match sockets for ${user.username} and ${opponentSocket.user.username}`
+      );
+
+      // Notify opponent the player has reconnected
+      if (opponentSocket.readyState === WebSocket.OPEN) {
+        opponentSocket.send(
+          JSON.stringify({
+            type: "status",
+            message: `✅ Your opponent ${user.username} reconnected.`,
+          })
+        );
+      }
+
+      ws.send(
+        JSON.stringify({
+          type: "status",
+          message: `✅ Reconnected to match with ${opponentSocket.user.username}.`,
+        })
+      );
+    } else {
+      // No opponent found, just welcome
+      ws.send(
+        JSON.stringify({
+          type: "welcome",
+          message: `👋 Welcome back ${user.username}#${user.discriminator}`,
+        })
+      );
+    }
+  } else {
+    // New connection: add state
+    playerStates.set(user.username, {
+      socket: ws,
+      isConnected: true,
+      disconnectTimeout: null,
+    });
+
+    ws.send(
+      JSON.stringify({
+        type: "welcome",
+        message: `👋 Welcome ${user.username}#${user.discriminator}`,
+      })
+    );
+  }
+
+  console.log(`🔗 Connection opened: ${user.username}#${user.discriminator}`);
 
   ws.on("message", (message) => {
     let data;
@@ -194,6 +285,22 @@ wss.on("connection", (ws, req) => {
         matches.set(player1.user.username, player2);
         matches.set(player2.user.username, player1);
 
+        // Initialize or update playerStates if not present (for new matches)
+        if (!playerStates.has(player1.user.username)) {
+          playerStates.set(player1.user.username, {
+            socket: player1,
+            isConnected: true,
+            disconnectTimeout: null,
+          });
+        }
+        if (!playerStates.has(player2.user.username)) {
+          playerStates.set(player2.user.username, {
+            socket: player2,
+            isConnected: true,
+            disconnectTimeout: null,
+          });
+        }
+
         player1.send(
           JSON.stringify({
             type: "matched",
@@ -225,7 +332,7 @@ wss.on("connection", (ws, req) => {
       console.log(`🃏 ${ws.user.username} selected: ${cardName}`);
 
       const opponentSocket = findOpponentSocket(ws);
-      if (opponentSocket && isSocketOpen(opponentSocket)) {
+      if (opponentSocket && opponentSocket.readyState === WebSocket.OPEN) {
         console.log(
           `📡 Relaying ${ws.user.username}'s card to ${opponentSocket.user.username}`
         );
@@ -237,9 +344,8 @@ wss.on("connection", (ws, req) => {
           })
         );
       } else {
-        console.warn(
-          `⚠️ No opponent socket found or opponent disconnected for ${ws.user.username}`
-        );
+        console.warn(`⚠️ No opponent socket found for ${ws.user.username}`);
+
         ws.send(
           JSON.stringify({
             type: "status",
@@ -251,22 +357,50 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
-    console.log(`🔌 Disconnected: ${ws.user.username}`);
+    const username = ws.user.username;
+    console.log(`🔌 Disconnected: ${username}`);
 
+    // Mark as disconnected in playerStates and start 1-minute timer to cleanup
+    const state = playerStates.get(username);
+    if (state) {
+      state.isConnected = false;
+      state.disconnectTimeout = setTimeout(() => {
+        // Check if both players disconnected
+        const opponentSocket = matches.get(username);
+        if (opponentSocket) {
+          const opponentName = opponentSocket.user.username;
+          const opponentState = playerStates.get(opponentName);
+
+          if (!opponentState || opponentState.isConnected === false) {
+            // Both disconnected, cleanup match
+            cleanupMatch(username);
+          } else {
+            // Opponent still connected, do not cleanup yet
+            console.log(
+              `⏳ Waiting on opponent ${opponentName} to disconnect before cleanup`
+            );
+          }
+        } else {
+          // No opponent, cleanup just this player
+          playerStates.delete(username);
+          console.log(
+            `🗑 Cleaned up player state for ${username} (no opponent)`
+          );
+        }
+      }, 60 * 1000); // 1 minute
+    }
+
+    // Remove from matchmaking queue if present
     if (ws.rarity && matchmakingQueues.has(ws.rarity)) {
       const queue = matchmakingQueues.get(ws.rarity);
       const index = queue.indexOf(ws);
       if (index !== -1) queue.splice(index, 1);
-      console.log(
-        `📤 Removed ${ws.user.username} from queue (rarity: ${ws.rarity})`
-      );
+      console.log(`📤 Removed ${username} from queue (rarity: ${ws.rarity})`);
     }
 
-    // ** DO NOT REMOVE matches map entries here on disconnect **
-    // Instead, keep them so the opponent reference stays intact.
-
-    const opponentSocket = findOpponentSocket(ws);
-    if (opponentSocket) {
+    // Notify opponent if connected that player disconnected
+    const opponentSocket = matches.get(username);
+    if (opponentSocket && opponentSocket.readyState === WebSocket.OPEN) {
       console.log(
         `⚠️ Notifying ${opponentSocket.user.username} that opponent disconnected`
       );
