@@ -96,9 +96,18 @@ const matchmakingQueues = new Map();
 // 🌟 Tracks active matches (username -> opponentSocket)
 const matches = new Map();
 
-// Find the opponent's WebSocket
+// Helper: Check if socket is open
+function isSocketOpen(socket) {
+  return socket && socket.readyState === WebSocket.OPEN;
+}
+
+// Find the opponent's WebSocket if still open, else return null
 function findOpponentSocket(ws) {
-  return matches.get(ws.user.username) || null;
+  const opponent = matches.get(ws.user.username);
+  if (!isSocketOpen(opponent)) {
+    return null;
+  }
+  return opponent;
 }
 
 // 💓 Heartbeat (keep sockets alive)
@@ -216,7 +225,7 @@ wss.on("connection", (ws, req) => {
       console.log(`🃏 ${ws.user.username} selected: ${cardName}`);
 
       const opponentSocket = findOpponentSocket(ws);
-      if (opponentSocket && opponentSocket.readyState === WebSocket.OPEN) {
+      if (opponentSocket && isSocketOpen(opponentSocket)) {
         console.log(
           `📡 Relaying ${ws.user.username}'s card to ${opponentSocket.user.username}`
         );
@@ -228,7 +237,15 @@ wss.on("connection", (ws, req) => {
           })
         );
       } else {
-        console.warn(`⚠️ No opponent socket found for ${ws.user.username}`);
+        console.warn(
+          `⚠️ No opponent socket found or opponent disconnected for ${ws.user.username}`
+        );
+        ws.send(
+          JSON.stringify({
+            type: "status",
+            message: "⚠️ Your opponent is not connected currently.",
+          })
+        );
       }
     }
   });
@@ -245,6 +262,9 @@ wss.on("connection", (ws, req) => {
       );
     }
 
+    // ** DO NOT REMOVE matches map entries here on disconnect **
+    // Instead, keep them so the opponent reference stays intact.
+
     const opponentSocket = findOpponentSocket(ws);
     if (opponentSocket) {
       console.log(
@@ -256,10 +276,6 @@ wss.on("connection", (ws, req) => {
           message: "⚠️ Your opponent disconnected. Waiting to reconnect...",
         })
       );
-
-      // 🗑 Clean up match pairings
-      matches.delete(ws.user.username);
-      matches.delete(opponentSocket.user.username);
     }
   });
 
