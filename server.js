@@ -107,7 +107,14 @@ function findOpponentSocket(ws) {
   return null;
 }
 
+// 💓 Heartbeat (keep sockets alive)
+function heartbeat() {
+  this.isAlive = true;
+}
 wss.on("connection", (ws, req) => {
+  ws.isAlive = true;
+  ws.on("pong", heartbeat);
+
   const urlParams = new URLSearchParams(req.url.replace(/^.*\?/, ""));
   const token = urlParams.get("token");
 
@@ -137,14 +144,20 @@ wss.on("connection", (ws, req) => {
     })
   );
 
+  console.log(
+    `🔗 New connection: ${ws.user.username}#${ws.user.discriminator}`
+  );
+
   ws.on("message", (message) => {
     let data;
     try {
       data = JSON.parse(message);
     } catch {
-      console.warn("⚠️ Non-JSON message:", message);
+      console.warn("⚠️ Non-JSON message received:", message);
       return;
     }
+
+    console.log(`📩 Received from ${ws.user.username}:`, data);
 
     if (data.type === "join") {
       const rarity = data.rarity || "Unknown";
@@ -156,6 +169,10 @@ wss.on("connection", (ws, req) => {
 
       const queue = matchmakingQueues.get(rarity);
       queue.push(ws);
+
+      console.log(
+        `🎯 ${ws.user.username} joined queue (rarity: ${rarity}). Queue size: ${queue.length}`
+      );
 
       ws.send(
         JSON.stringify({
@@ -196,10 +213,18 @@ wss.on("connection", (ws, req) => {
       }
     } else if (data.type === "selection") {
       const cardName = data.cardName;
-      if (!cardName) return;
+      if (!cardName) {
+        console.warn(`⚠️ No cardName provided by ${ws.user.username}`);
+        return;
+      }
+
+      console.log(`🃏 ${ws.user.username} selected: ${cardName}`);
 
       const opponentSocket = findOpponentSocket(ws);
       if (opponentSocket) {
+        console.log(
+          `📡 Relaying ${ws.user.username}'s card to ${opponentSocket.user.username}`
+        );
         opponentSocket.send(
           JSON.stringify({
             type: "opponentSelection",
@@ -207,6 +232,8 @@ wss.on("connection", (ws, req) => {
             cardName: cardName,
           })
         );
+      } else {
+        console.warn(`⚠️ No opponent socket found for ${ws.user.username}`);
       }
     }
   });
@@ -218,22 +245,46 @@ wss.on("connection", (ws, req) => {
       const queue = matchmakingQueues.get(ws.rarity);
       const index = queue.indexOf(ws);
       if (index !== -1) queue.splice(index, 1);
+      console.log(
+        `📤 Removed ${ws.user.username} from queue (rarity: ${ws.rarity})`
+      );
     }
 
     if (ws.opponent) {
       const opponentSocket = findOpponentSocket(ws);
       if (opponentSocket) {
+        console.log(
+          `⚠️ Notifying ${opponentSocket.user.username} that opponent disconnected`
+        );
         opponentSocket.send(
           JSON.stringify({
             type: "status",
-            message: "Your opponent disconnected.",
+            message: "⚠️ Your opponent disconnected. Waiting to reconnect...",
           })
         );
-        opponentSocket.opponent = null;
+        // Do NOT clear opponentSocket.opponent so they can reconnect
       }
     }
   });
+
+  ws.on("error", (err) => {
+    console.error(`❌ Error for ${ws.user.username}:`, err.message);
+  });
 });
+
+// Heartbeat interval
+const interval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      console.warn(`💀 Terminating dead connection: ${ws.user?.username}`);
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+wss.on("close", () => clearInterval(interval));
 
 server.listen(PORT, () => {
   console.log(`🌐 Server running on http://localhost:${PORT}`);
