@@ -17,7 +17,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server }); // ✅ Directly attach WS to HTTP server
+const wss = new WebSocketServer({ server }); // Attach WS to HTTP server
 
 const {
   DISCORD_CLIENT_ID,
@@ -94,7 +94,6 @@ app.get("/auth/discord", async (req, res) => {
 
 const matchmakingQueues = new Map();
 
-// Helper to find opponent socket of a given client
 function findOpponentSocket(ws) {
   if (!ws.opponent) return null;
   for (const client of wss.clients) {
