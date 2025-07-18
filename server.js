@@ -170,6 +170,42 @@ const CARD_STATS = {
   },
 };
 
+// Serve the index.html at root
+app.use(express.static(path.join(__dirname, "public")));
+
+// Endpoint to return all active matches data
+app.get("/matches", (req, res) => {
+  // Build an array of match info objects { playerOne, rarity, playerTwo }
+  const seen = new Set();
+  const matchList = [];
+
+  for (const [player, opponentWs] of matches.entries()) {
+    if (seen.has(player)) continue; // Already processed
+    const opponent = opponentWs.user.username;
+
+    // Only include if opponent also matches back
+    if (
+      matches.get(opponent) &&
+      matches.get(opponent).user.username === player
+    ) {
+      // Get rarity from one of the players' sockets
+      const playerOneSocket = playerStates.get(player)?.socket;
+      const rarity = playerOneSocket?.rarity || "N/A";
+
+      matchList.push({
+        playerOne: player,
+        rarity,
+        playerTwo: opponent,
+      });
+
+      seen.add(player);
+      seen.add(opponent);
+    }
+  }
+
+  res.json(matchList);
+});
+
 /**
  * =====================================
  * Matchmaking, Matches and Player States

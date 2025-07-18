@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Active Matches</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 2rem;
+        background: #f9f9f9;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+      th,
+      td {
+        padding: 12px 15px;
+        border: 1px solid #ddd;
+        text-align: left;
+      }
+      th {
+        background-color: #007acc;
+        color: white;
+      }
+      tr:nth-child(even) {
+        background-color: #f3f3f3;
+      }
+      caption {
+        font-size: 1.5rem;
+        margin-bottom: 1rem;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <table>
+      <caption>
+        Active Matches
+      </caption>
+      <thead>
+        <tr>
+          <th>Player One</th>
+          <th>Rarity</th>
+          <th>Player Two</th>
+        </tr>
+      </thead>
+      <tbody id="matches-body">
+        <tr>
+          <td colspan="3" style="text-align: center">Loading...</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <script>
+      async function fetchMatches() {
+        try {
+          const res = await fetch("/matches");
+          if (!res.ok) throw new Error("Failed to fetch matches");
+          const matches = await res.json();
+
+          const tbody = document.getElementById("matches-body");
+          tbody.innerHTML = "";
+
+          if (matches.length === 0) {
+            tbody.innerHTML =
+              '<tr><td colspan="3" style="text-align:center;">No active matches</td></tr>';
+            return;
+          }
+
+          matches.forEach(({ playerOne, rarity, playerTwo }) => {
+            const row = document.createElement("tr");
+
+            row.innerHTML = `
+            <td>${playerOne}</td>
+            <td>${rarity}</td>
+            <td>${playerTwo}</td>
+          `;
+
+            tbody.appendChild(row);
+          });
+        } catch (err) {
+          const tbody = document.getElementById("matches-body");
+          tbody.innerHTML = `<tr><td colspan="3" style="color:red; text-align:center;">${err.message}</td></tr>`;
+        }
+      }
+
+      // Initial fetch
+      fetchMatches();
+
+      // Refresh every 10 seconds
+      setInterval(fetchMatches, 10000);
+    </script>
+  </body>
+</html>
