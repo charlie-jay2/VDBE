@@ -450,8 +450,10 @@ wss.on("connection", (ws, req) => {
           JSON.stringify({
             type: "cardStats",
             cardName: cardName,
-            SP: stats.SP,
-            VR: stats.VR,
+            stats: {
+              Health: stats.SP,
+              "Damage Limit": stats.VR,
+            },
           })
         );
       } else {
