@@ -1,21 +1,96 @@
-import http from "http";
-import WebSocket, { WebSocketServer } from "ws";
-import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 dotenv.config();
 
-const JWT_SECRET = process.env.JWT_SECRET || "your_secret_here";
-const PORT = 3000;
+import express from "express";
+import http from "http";
+import WebSocket, { WebSocketServer } from "ws";
+import jwt from "jsonwebtoken";
+import axios from "axios";
+import cors from "cors";
+import helmet from "helmet";
+import path from "path";
+import { fileURLToPath } from "url";
 
-const server = http.createServer();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-const players = new Map();
-const queue = [];
-const matches = new Map();
-const playerStates = new Map();
-const disconnectTimers = new Map();
+const {
+  DISCORD_CLIENT_ID,
+  DISCORD_CLIENT_SECRET,
+  DISCORD_REDIRECT_URI,
+  JWT_SECRET,
+  FRONTEND_URL,
+  PORT = 3000,
+} = process.env;
 
+if (
+  !DISCORD_CLIENT_ID ||
+  !DISCORD_CLIENT_SECRET ||
+  !DISCORD_REDIRECT_URI ||
+  !JWT_SECRET ||
+  !FRONTEND_URL
+) {
+  console.error("❌ Missing environment variables!");
+  process.exit(1);
+}
+
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+
+app.get("/auth/discord", async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.status(400).send("No code provided");
+
+  try {
+    const tokenResponse = await axios.post(
+      "https://discord.com/api/oauth2/token",
+      new URLSearchParams({
+        client_id: DISCORD_CLIENT_ID,
+        client_secret: DISCORD_CLIENT_SECRET,
+        grant_type: "authorization_code",
+        code: code,
+        redirect_uri: DISCORD_REDIRECT_URI,
+      }),
+      {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      }
+    );
+
+    const { access_token } = tokenResponse.data;
+
+    const userResponse = await axios.get("https://discord.com/api/users/@me", {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    const user = userResponse.data;
+
+    const jwtPayload = {
+      id: user.id,
+      username: user.username,
+      discriminator: user.discriminator,
+      avatar: user.avatar,
+    };
+
+    const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: "7d" });
+
+    console.log(`✅ Authenticated: ${user.username}#${user.discriminator}`);
+
+    res.redirect(`${FRONTEND_URL}?token=${token}`);
+  } catch (err) {
+    console.error(
+      "❌ Discord OAuth failed:",
+      err.response?.data || err.message
+    );
+    res.status(500).send("Discord authentication failed");
+  }
+});
+
+// Card stats object:
 const cardStats = {
   COMMON: {
     "Kagamine Rin": { SP: 20, VR: 15 },
@@ -42,6 +117,7 @@ const cardStats = {
     Gumi: { SP: 45, VR: 25 },
     Rana: { SP: 40, VR: 25 },
     Tohoko: { SP: 42, VR: 40 },
+    Luka: { SP: 42, VR: 40 },
     "Macne Nana": { SP: 48, VR: 10 },
     "Magurine Luka": { SP: 48, VR: 20 },
     "Kasane Teto": { SP: 45, VR: 35 },
@@ -73,16 +149,56 @@ const cardStats = {
   },
 };
 
+// 🌟 Tracks players waiting by rarity
+const matchmakingQueues = new Map();
+
+// 🌟 Tracks active matches (username -> opponentSocket)
+const matches = new Map();
+
+// 🌟 Tracks player states for reconnect and cleanup
+const playerStates = new Map();
+
+function findOpponentSocket(ws) {
+  const opponent = matches.get(ws.user.username);
+  if (!opponent) {
+    console.log(`❌ No opponent found in matches for ${ws.user.username}`);
+    return null;
+  }
+  if (opponent.readyState !== WebSocket.OPEN) {
+    console.log(`❌ Opponent socket for ${ws.user.username} is not open`);
+    return null;
+  }
+  console.log(
+    `✅ Opponent socket found for ${ws.user.username}: ${opponent.user.username}`
+  );
+  return opponent;
+}
+
 function heartbeat() {
   this.isAlive = true;
 }
 
 function clearDisconnectTimer(username) {
-  const timer = disconnectTimers.get(username);
-  if (timer) {
-    clearTimeout(timer);
-    disconnectTimers.delete(username);
+  const state = playerStates.get(username);
+  if (state && state.disconnectTimeout) {
+    clearTimeout(state.disconnectTimeout);
+    state.disconnectTimeout = null;
   }
+}
+
+function cleanupMatch(username) {
+  const opponentSocket = matches.get(username);
+  if (!opponentSocket) return;
+
+  const opponentName = opponentSocket.user.username;
+
+  matches.delete(username);
+  matches.delete(opponentName);
+
+  playerStates.delete(username);
+  playerStates.delete(opponentName);
+
+  console.log(`🗑 Cleaned up match between ${username} and ${opponentName}`);
 }
 
 wss.on("connection", (ws, req) => {
@@ -111,9 +227,11 @@ wss.on("connection", (ws, req) => {
 
   ws.rarity = null;
 
+  // Reconnect handling
   const prevState = playerStates.get(user.username);
   if (prevState && !prevState.isConnected) {
-    console.log(`🔄 Reconnection for ${user.username}`);
+    console.log(`🔄 Reconnection detected for ${user.username}`);
+
     clearDisconnectTimer(user.username);
 
     prevState.socket = ws;
@@ -121,139 +239,256 @@ wss.on("connection", (ws, req) => {
 
     const opponentSocket = matches.get(user.username);
     if (opponentSocket) {
-      matches.set(user.username, opponentSocket);
-      matches.set(opponentSocket.user.username, ws);
-    }
+      const opponentName = opponentSocket.user.username;
 
-    console.log(`🔄 Reconnected ${user.username}`);
+      matches.set(user.username, opponentSocket);
+      matches.set(opponentName, ws);
+
+      const opponentState = playerStates.get(opponentName);
+      if (opponentState) opponentState.socket = opponentSocket;
+      const playerState = playerStates.get(user.username);
+      if (playerState) playerState.socket = ws;
+
+      console.log(
+        `🔄 Updated match sockets for ${user.username} and ${opponentName}`
+      );
+
+      if (opponentSocket.readyState === WebSocket.OPEN) {
+        opponentSocket.send(
+          JSON.stringify({
+            type: "status",
+            message: `✅ Your opponent ${user.username} reconnected.`,
+          })
+        );
+      }
+
+      ws.send(
+        JSON.stringify({
+          type: "status",
+          message: `✅ Reconnected to match with ${opponentName}.`,
+        })
+      );
+    } else {
+      ws.send(
+        JSON.stringify({
+          type: "welcome",
+          message: `👋 Welcome back ${user.username}#${user.discriminator}`,
+        })
+      );
+    }
+  } else {
+    playerStates.set(user.username, {
+      socket: ws,
+      isConnected: true,
+      disconnectTimeout: null,
+    });
+
+    ws.send(
+      JSON.stringify({
+        type: "welcome",
+        message: `👋 Welcome ${user.username}#${user.discriminator}`,
+      })
+    );
   }
 
-  playerStates.set(user.username, {
-    socket: ws,
-    isConnected: true,
-  });
+  console.log(`🔗 Connection opened: ${user.username}#${user.discriminator}`);
 
   ws.on("message", (message) => {
     let data;
     try {
       data = JSON.parse(message);
-    } catch (err) {
-      console.warn("❌ Invalid JSON from client:", err.message);
+    } catch {
+      console.warn("⚠️ Non-JSON message received:", message);
       return;
     }
 
+    console.log(`📩 Received from ${ws.user.username}:`, data);
+
     if (data.type === "join") {
-      const rarity = data.rarity;
+      const rarity = data.rarity || "Unknown";
       ws.rarity = rarity;
+
+      if (!matchmakingQueues.has(rarity)) {
+        matchmakingQueues.set(rarity, []);
+      }
+
+      const queue = matchmakingQueues.get(rarity);
       queue.push(ws);
-      console.log(`🎲 ${user.username} joined queue with rarity ${rarity}`);
+
+      console.log(
+        `🎯 ${ws.user.username} joined queue (rarity: ${rarity}). Queue size: ${queue.length}`
+      );
+
+      ws.send(
+        JSON.stringify({
+          type: "status",
+          message: `Waiting for opponent of rarity: ${rarity}`,
+        })
+      );
 
       if (queue.length >= 2) {
-        const [player1, player2] = [queue.shift(), queue.shift()];
+        const [player1, player2] = queue.splice(0, 2);
+
+        player1.role = "Player One";
+        player2.role = "Player Two";
+
         matches.set(player1.user.username, player2);
         matches.set(player2.user.username, player1);
 
-        [player1, player2].forEach((player, i) => {
-          player.send(
-            JSON.stringify({
-              type: "matched",
-              opponent: i === 0 ? player2.user.username : player1.user.username,
-            })
-          );
-        });
+        if (!playerStates.has(player1.user.username)) {
+          playerStates.set(player1.user.username, {
+            socket: player1,
+            isConnected: true,
+            disconnectTimeout: null,
+          });
+        }
+        if (!playerStates.has(player2.user.username)) {
+          playerStates.set(player2.user.username, {
+            socket: player2,
+            isConnected: true,
+            disconnectTimeout: null,
+          });
+        }
+
+        player1.send(
+          JSON.stringify({
+            type: "matched",
+            opponent: player2.user.username,
+            yourName: player1.user.username,
+            role: player1.role,
+          })
+        );
+        player2.send(
+          JSON.stringify({
+            type: "matched",
+            opponent: player1.user.username,
+            yourName: player2.user.username,
+            role: player2.role,
+          })
+        );
 
         console.log(
-          `🤝 Match created: ${player1.user.username} vs ${player2.user.username}`
+          `🔗 Matched ${player1.user.username} with ${player2.user.username} (rarity: ${rarity})`
         );
       }
-    }
+    } else if (data.type === "selection") {
+      const cardName = data.cardName;
+      if (!cardName) {
+        console.warn(`⚠️ No cardName provided by ${ws.user.username}`);
+        return;
+      }
 
-    if (data.type === "selection") {
-      const opponentSocket = matches.get(user.username);
+      console.log(`🃏 ${ws.user.username} selected: ${cardName}`);
+
+      const opponentSocket = findOpponentSocket(ws);
       if (opponentSocket && opponentSocket.readyState === WebSocket.OPEN) {
+        console.log(
+          `📡 Relaying ${ws.user.username}'s card to ${opponentSocket.user.username}`
+        );
         opponentSocket.send(
           JSON.stringify({
             type: "opponentSelection",
-            cardName: data.cardName,
+            username: ws.user.username,
+            cardName: cardName,
           })
         );
-        console.log(
-          `📤 Sent opponentSelection: ${data.cardName} to ${opponentSocket.user.username}`
+      } else {
+        console.warn(`⚠️ No opponent socket found for ${ws.user.username}`);
+
+        ws.send(
+          JSON.stringify({
+            type: "status",
+            message: "⚠️ Your opponent is not connected currently.",
+          })
         );
       }
-    }
-
-    if (data.type === "getCardStats") {
-      console.log(`📩 Received from ${user.username}#0:`, data);
-
-      let foundStats = null;
-
-      for (const tier in cardStats) {
-        const tierData = cardStats[tier];
-        for (const name in tierData) {
-          const filename = name.replace(/\s+/g, "").toLowerCase();
-          const compareName = data.cardName
-            .replace(/\.(png|jpg|jpeg)/gi, "")
-            .toLowerCase();
-          if (compareName.includes(filename)) {
-            foundStats = { ...tierData[name], cardName: data.cardName };
-            break;
-          }
-        }
-        if (foundStats) break;
+    } else if (data.type === "getCardStats") {
+      // Client asks for stats of a card
+      const cardName = data.cardName;
+      if (!cardName) {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: "No cardName provided for getCardStats",
+          })
+        );
+        return;
       }
 
-      if (foundStats) {
+      // Find card stats in all categories
+      let stats = null;
+      for (const category of Object.values(cardStats)) {
+        if (category[cardName]) {
+          stats = category[cardName];
+          break;
+        }
+      }
+
+      if (stats) {
         ws.send(
           JSON.stringify({
             type: "cardStats",
-            cardName: foundStats.cardName,
-            SP: foundStats.SP,
-            VR: foundStats.VR,
+            cardName: cardName,
+            SP: stats.SP,
+            VR: stats.VR,
           })
-        );
-        console.log(
-          `✅ Sent stats for ${foundStats.cardName}: SP=${foundStats.SP}, VR=${foundStats.VR}`
         );
       } else {
         ws.send(
           JSON.stringify({
             type: "error",
-            message: `Card stats not found for: ${data.cardName}`,
+            message: `Stats not found for card: ${cardName}`,
           })
         );
-        console.warn(`❌ Card stats not found for: ${data.cardName}`);
       }
     }
   });
 
   ws.on("close", () => {
-    console.warn(`⚠️ WS closed: ${user.username}`);
-    const state = playerStates.get(user.username);
-    if (state) {
-      state.isConnected = false;
+    const username = ws.user.username;
+    console.log(`🔌 Connection closed: ${username}`);
+
+    const state = playerStates.get(username);
+    if (!state) {
+      console.log(`⚠️ No state found on close for ${username}`);
+      return;
     }
 
-    disconnectTimers.set(
-      user.username,
-      setTimeout(() => {
-        console.log(`🗑️ Cleaning up ${user.username}`);
-        playerStates.delete(user.username);
-        matches.delete(user.username);
-      }, 10000)
-    ); // 10s grace period
+    state.isConnected = false;
+
+    state.disconnectTimeout = setTimeout(() => {
+      console.log(`⏳ Cleaning up after disconnect timeout for ${username}`);
+
+      for (const [rarity, queue] of matchmakingQueues.entries()) {
+        const index = queue.indexOf(ws);
+        if (index !== -1) {
+          queue.splice(index, 1);
+          console.log(`🗑 Removed ${username} from queue (${rarity})`);
+          break;
+        }
+      }
+
+      cleanupMatch(username);
+
+      playerStates.delete(username);
+
+      console.log(`🧹 Cleaned up player state for ${username}`);
+    }, 60000);
   });
 });
 
+// Heartbeat to detect dead connections
 const interval = setInterval(() => {
   wss.clients.forEach((ws) => {
-    if (!ws.isAlive) return ws.terminate();
+    if (ws.isAlive === false) {
+      console.log(`💀 Terminating dead connection: ${ws.user?.username}`);
+      return ws.terminate();
+    }
     ws.isAlive = false;
-    ws.ping();
+    ws.ping(() => {});
   });
 }, 30000);
 
-wss.on("close", () => clearInterval(interval));
 server.listen(PORT, () => {
-  console.log(`🚀 WebSocket server running on ws://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
