@@ -402,6 +402,27 @@ wss.on("connection", (ws, req) => {
           })
         );
       }
+
+      // Send stats back to selecting player immediately
+      let stats = null;
+      for (const category of Object.values(cardStats)) {
+        if (category[cardName]) {
+          stats = category[cardName];
+          break;
+        }
+      }
+      if (stats) {
+        ws.send(
+          JSON.stringify({
+            type: "cardStats",
+            cardName,
+            stats: {
+              Health: stats.SP,
+              "Damage Limit": stats.VR,
+            },
+          })
+        );
+      }
     } else if (data.type === "getCardStats") {
       // Client asks for stats of a card
       const cardName = data.cardName;
