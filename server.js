@@ -378,7 +378,7 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      console.log(`🃏 ${ws.user.username} selected: ${cardName}`);
+      console.log(`🃏 ${ws.user.username} selected card: ${cardName}`);
 
       const opponentSocket = findOpponentSocket(ws);
       if (opponentSocket && opponentSocket.readyState === WebSocket.OPEN) {
@@ -412,16 +412,19 @@ wss.on("connection", (ws, req) => {
         }
       }
       if (stats) {
+        console.log(
+          `📊 Sending cardStats to ${ws.user.username} for ${cardName}: SP=${stats.SP}, VR=${stats.VR}`
+        );
         ws.send(
           JSON.stringify({
             type: "cardStats",
             cardName,
-            stats: {
-              Health: stats.SP,
-              "Damage Limit": stats.VR,
-            },
+            SP: stats.SP,
+            VR: stats.VR,
           })
         );
+      } else {
+        console.warn(`⚠️ Stats not found for card: ${cardName}`);
       }
     } else if (data.type === "getCardStats") {
       // Client asks for stats of a card
@@ -446,14 +449,15 @@ wss.on("connection", (ws, req) => {
       }
 
       if (stats) {
+        console.log(
+          `📊 Sending requested cardStats to ${ws.user.username} for ${cardName}: SP=${stats.SP}, VR=${stats.VR}`
+        );
         ws.send(
           JSON.stringify({
             type: "cardStats",
-            cardName: cardName,
-            stats: {
-              Health: stats.SP,
-              "Damage Limit": stats.VR,
-            },
+            cardName,
+            SP: stats.SP,
+            VR: stats.VR,
           })
         );
       } else {
@@ -462,6 +466,9 @@ wss.on("connection", (ws, req) => {
             type: "error",
             message: `Stats not found for card: ${cardName}`,
           })
+        );
+        console.warn(
+          `⚠️ Stats not found for requested card: ${cardName} by ${ws.user.username}`
         );
       }
     }
