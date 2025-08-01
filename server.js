@@ -1,12 +1,14 @@
-const WebSocket = require("ws");
-const jwt = require("jsonwebtoken");
-const http = require("http");
+import http from "http";
+import WebSocket, { WebSocketServer } from "ws";
+import jwt from "jsonwebtoken";
+import dotenv from "dotenv";
+dotenv.config();
 
 const JWT_SECRET = process.env.JWT_SECRET || "your_secret_here";
 const PORT = 3000;
 
 const server = http.createServer();
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocketServer({ server });
 
 const players = new Map();
 const queue = [];
