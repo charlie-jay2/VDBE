@@ -405,12 +405,18 @@ wss.on("connection", (ws, req) => {
 
       // Send stats back to selecting player immediately
       let stats = null;
+      const lowerCardName = cardName.toLowerCase();
+
       for (const category of Object.values(cardStats)) {
-        if (category[cardName]) {
-          stats = category[cardName];
-          break;
+        for (const key in category) {
+          if (key.toLowerCase() === lowerCardName) {
+            stats = category[key];
+            break;
+          }
         }
+        if (stats) break;
       }
+
       if (stats) {
         console.log(
           `📊 Sending cardStats to ${ws.user.username} for ${cardName}: SP=${stats.SP}, VR=${stats.VR}`
@@ -439,13 +445,18 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      // Find card stats in all categories
+      // Case-insensitive lookup for card stats
       let stats = null;
+      const lowerCardName = cardName.toLowerCase();
+
       for (const category of Object.values(cardStats)) {
-        if (category[cardName]) {
-          stats = category[cardName];
-          break;
+        for (const key in category) {
+          if (key.toLowerCase() === lowerCardName) {
+            stats = category[key];
+            break;
+          }
         }
+        if (stats) break;
       }
 
       if (stats) {
